@@ -3,6 +3,7 @@
 // the LICENSE file.
 #include <algorithm>  // for max, min
 #include <cstddef>    // for size_t
+#include <ftxui/dom/flexbox_config.hpp>
 #include <memory>  // for make_shared, __shared_ptr_access, allocator, shared_ptr, allocator_traits<>::value_type
 #include <utility>  // for move
 
@@ -161,7 +162,7 @@ class VerticalContainer : public ContainerBase {
 
     if (!box_.Contain(event.mouse().x, event.mouse().y)) {
       return false;
-    }
+  }
 
     const int old_selected = *selector_;
     if (event.mouse().button == Mouse::WheelUp) {
@@ -295,6 +296,155 @@ class StackedContainer : public ContainerBase {
     return false;
   }
 };
+
+class FlexContainer : public ContainerBase {
+ private:
+  Box box_;
+  std::vector<Box> child_boxes_;
+  FlexboxConfig config;
+  static uint CalcSquaredDistance(Box a, Box b) {
+    int x_distance = ((a.x_min + a.x_max) / 2) - ((b.x_min + b.x_max) / 2);
+    x_distance *= x_distance;
+    int y_distance = ((a.y_min + a.y_max) / 2) - ((b.y_min + b.y_max) / 2);
+    y_distance *= y_distance;
+    return x_distance + y_distance;
+  }
+ protected:
+  bool MoveSelectorLine(int dir) {
+    const Box current_child_box = child_boxes_[*selector_];
+    bool on_next_line = false;
+    // Select the first child that is focusable on the different line
+    for (int i = *selector_ + dir; i >= 0 && i < int(children_.size());
+         i += dir) {
+      if (!ChildAt(i)->Focusable()) { 
+        continue;
+      }
+      *selector_ = i;
+      if (current_child_box.y_min > child_boxes_[i].y_max) {
+        on_next_line = true;
+        break;
+      }
+      if (current_child_box.y_max < child_boxes_[i].y_min) {
+        on_next_line = true;
+        break;
+      }
+    }
+    if (!on_next_line) {
+      return false;
+    }
+    // Continue selecting until the closest child  the current child
+    uint distance = CalcSquaredDistance(current_child_box, 
+                                        child_boxes_[*selector_]);
+    for (int i = *selector_ + dir; i >= 0 && i < int(ChildCount());
+         i += dir) {
+      if (!ChildAt(i)->Focusable()) {
+        continue;
+      }
+      if (CalcSquaredDistance(current_child_box, child_boxes_[i]) <= distance) {
+        *selector_ = i;
+        distance = CalcSquaredDistance(current_child_box, 
+                                       child_boxes_[i]);
+      } else {
+        break;
+      }
+    }
+    return true;
+  }
+
+ public:
+  using ContainerBase::ContainerBase;
+  FlexContainer(Components children, 
+                int* selector, 
+                FlexboxConfig config) : 
+    ContainerBase(std::move(children), selector), 
+    config(config) {}
+  Element OnRender() override {
+    Elements elements;
+    elements.reserve(children_.size());
+    child_boxes_.resize(children_.size());
+    for (size_t i = 0; i < children_.size(); ++i) {
+      elements.push_back(children_[i]->Render() | reflect(child_boxes_[i]));
+    }
+    return flexbox(std::move(elements), config) | reflect(box_);
+  }
+  bool EventHandler(Event event) override {
+    const int old_selected = *selector_;
+    if (event == Event::ArrowLeft || event == Event::Character('h')) {
+      MoveSelector(-1);
+    }
+    if (event == Event::ArrowRight || event == Event::Character('l')) {
+      MoveSelector(+1);
+    }
+    if (event == Event::ArrowUp || event == Event::Character('k')) {
+      if (!MoveSelectorLine(-1)) {
+        return false;
+      }
+    }
+    if (event == Event::ArrowDown || event == Event::Character('j')) {
+      if (!MoveSelectorLine(+1)) {
+        return false;
+      }
+    }
+    if (event == Event::PageUp) {
+      for (int i = 0; i < box_.y_max - box_.y_min; ++i) {
+        MoveSelector(-1);
+      }
+    }
+    if (event == Event::PageDown) {
+      for (int i = 0; i < box_.y_max - box_.y_min; ++i) {
+        MoveSelector(1);
+      }
+    }
+    if (event == Event::Home) {
+      for (size_t i = 0; i < children_.size(); ++i) {
+        MoveSelector(-1);
+      }
+    }
+    if (event == Event::End) {
+      for (size_t i = 0; i < children_.size(); ++i) {
+        MoveSelector(1);
+      }
+    }
+    if (event == Event::Tab) {
+      MoveSelectorWrap(+1);
+    }
+    if (event == Event::TabReverse) {
+      MoveSelectorWrap(-1);
+    }
+    *selector_ = std::max(0, std::min(int(children_.size()) - 1, *selector_));
+    return *selector_ != old_selected;
+  }
+  bool OnMouseEvent(Event event) override {
+    if (ContainerBase::OnMouseEvent(event)) {
+      return true;
+    }
+
+    if (event.mouse().button != Mouse::WheelUp &&
+        event.mouse().button != Mouse::WheelDown) {
+      return false;
+    }
+
+    if (!box_.Contain(event.mouse().x, event.mouse().y)) {
+      return false;
+    }
+
+    const int old_selected = *selector_;
+    if (event.mouse().button == Mouse::WheelUp) {
+      if (!MoveSelectorLine(-1)) {
+        return false;
+      }    
+    }
+    if (event.mouse().button == Mouse::WheelDown) {
+      if (!MoveSelectorLine(+1)) {
+        return false;
+      }
+    }
+    *selector_ = std::max(0, std::min(int(children_.size()) - 1, *selector_));
+    return old_selected != *selector_;
+  }
+
+};
+
 
 namespace Container {
 
@@ -431,6 +581,95 @@ Component Tab(Components children, int* selector) {
 /// ```
 Component Stacked(Components children) {
   return std::make_shared<StackedContainer>(std::move(children));
+}
+
+/// @brief A list of components, drawn one by one in a flexbox and navigated
+/// using left/right/yp/down arrow key or 'h'/'l'/'j'/'k' keys.
+/// This should be used with "yframe" node
+/// @param children the list of components.
+/// @ingroup component
+/// @see ContainerBase
+///
+/// ### Example
+///
+/// ```cpp
+/// int selected_children = 2;
+/// auto container = Container::Flex({
+///   children_1,
+///   ...,
+///   children_100,
+/// }, selected_children);
+/// ```
+Component Flex(Components children) {
+  return std::make_shared<FlexContainer>(std::move(children), nullptr,FlexboxConfig());
+}
+
+
+/// @brief A list of components, drawn one by one in a flexbox and navigated
+/// using left/right/yp/down arrow key or 'h'/'l'/'j'/'k' keys.
+/// This should be used with "yframe" node
+/// @param children the list of components.
+/// @param selector A reference to the index of the selected children.
+/// @ingroup component
+/// @see ContainerBase
+///
+/// ### Example
+///
+/// ```cpp
+/// int selected_children = 2;
+/// auto container = Container::Flex({
+///   children_1,
+///   ...,
+///   children_100,
+/// }, selected_children);
+/// ```
+Component Flex(Components children, int* selector) {
+  return std::make_shared<FlexContainer>(std::move(children), selector,FlexboxConfig());
+}
+
+/// @brief A list of components, drawn one by one in a flexbox and navigated
+/// using left/right/yp/down arrow key or 'h'/'l'/'j'/'k' keys.
+/// This should be used with "yframe" node
+/// @param children the list of components.
+/// @param config The flexbox configuration
+/// @ingroup component
+/// @see ContainerBase
+///
+/// ### Example
+///
+/// ```cpp
+/// int selected_children = 2;
+/// auto container = Container::Flex({
+///   children_1,
+///   ...,
+///   children_100,
+/// }, selected_children);
+/// ```
+Component Flex(Components children, FlexboxConfig config) {
+  return std::make_shared<FlexContainer>(std::move(children), nullptr, config);
+}
+
+/// @brief A list of components, drawn one by one in a flexbox and navigated
+/// using left/right/yp/down arrow key or 'h'/'l'/'j'/'k' keys.
+/// This should be used with "yframe" node
+/// @param children the list of components.
+/// @param selector A reference to the index of the selected children.
+/// @param config The flexbox configuration
+/// @ingroup component
+/// @see ContainerBase
+///
+/// ### Example
+///
+/// ```cpp
+/// int selected_children = 2;
+/// auto container = Container::Flex({
+///   children_1,
+///   ...,
+///   children_100,
+/// }, selected_children);
+/// ```
+Component Flex(Components children, int* selector, FlexboxConfig config) {
+  return std::make_shared<FlexContainer>(std::move(children), selector, config);
 }
 
 }  // namespace Container

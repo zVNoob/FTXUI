@@ -43,6 +43,10 @@ Component Horizontal(Components children);
 Component Horizontal(Components children, int* selector);
 Component Tab(Components children, int* selector);
 Component Stacked(Components children);
+Component Flex(Components children);
+Component Flex(Components children, int* selector);
+Component Flex(Components children, FlexboxConfig config);
+Component Flex(Components children, int* selector, FlexboxConfig config);
 }  // namespace Container
 
 Component Button(ButtonOption options);
